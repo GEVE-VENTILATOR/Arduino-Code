@@ -1,20 +1,25 @@
 
 
 /* ----------------------
-  GEVE - Ventilator monitoring system
+  GEVE - Ventilator monitoring system V1.0
+
+  Date : 07.04.20
+  
+  Authors : 
+  Stoeckli H. - HEPIA
+  Rossel R.   - ANGARA TECHNOLOGY
 
 
   Inputs :
   ON/OFF - Switch
   Error acknowledgment - Switch
   Breath per minute - bpm (breath/minute)  - Potentiometer - 8 to 30 - typical 12
-  Tidal Volumne - VT (encoder pulses)  - Potentiometer - 200 to 800 ml - need to be calibrated (better start low)
-  Inspiration/expiration ratio - IE (-) - Potentiometer - 1:4 to 1:1 - typical 1:2
-  PEEP (min. pressure after exhale) - Potentiometer - 5 to 20 cmH2O (TO DEFINED IF NECESSARY AS USER INPUT OR ONLY SET ONCE)
-  Pressure - Pressure sensor SSCDRNN160MDAA5 +/- 163 cmH2O (ideally SSCDRNN100MDAA5 but unavailable, maybe find another +/- 60 to 100 cmH20 sensor)
+  Tidal Volumne - VT (ml)  - Potentiometer - 200 to 800 ml - need to be calibrated (better start low)
+  Inspiration/expiration ratio - IE (-) - Potentiometer - 1:3 to 1:1 - typical 1:2
+  Pressure - Pressure sensor SSCDRNN160MDAA5 +/- 163 cmH2O (ideally SSCDRNN100MDAA5 but unavailable, nother +/- 60 to 100 cmH20 sensor can fit)
 
   Outputs :
-  LCD screen 4X20 2004A (to be changed, as not available) - Displays BPM, VT, IE, Pressure, Plateau Pressure
+  LCD screen 4X20 2004A - Displays BPM, VT, IE, Pressure, Plateau Pressure, PEEP and errors
   Motor driver LECPA OM04505
   Buzzer - CMT-8540S-SMT-TR (to be tested)
   LED
@@ -22,7 +27,7 @@
 
   Timers :
 
-  Timer 0 : Used with Time
+  Timer 0 : Used with Time function
   Timer 1 : Set Repiratory rythm trough motor control
   Timer 2 : Used with Tone() function (alarm)
 
@@ -30,8 +35,8 @@
 
   Mode 1 : Volume control - selected breaths delivered at constant rate, pressure monitored only for
   safety. - Only suitable for sedated or paralyzed patients.
-
-  Mode 2  : ****NOT IMPLEMENTED YET, MAYBE NEVER**** Assist control - When the patient tries to breathe in,
+ 
+  Mode 2  : ****    NOT IMPLEMENTED YET    ****     Assist control - When the patient tries to breathe in,
   the pressure sensor will see a pressure drop, and the machine will begin squeezing the bag in order
   to assist in the breath.
   Because the compression is triggered by the patient’s breath,
@@ -46,9 +51,8 @@
 */
 
 // ================= CHANGE LCD MODEL HERE ====================0
-//#define LCD_NEWHAVEN 0
+//#define LCD_NEWHAVEN 0       // NOT FULLY OPERATIONNAL !
 #define LCD_2004A 1
-
 
 
 
@@ -67,7 +71,7 @@
 
 #define MIN_BPM 8                       // in breath/minute
 #define MAX_BPM 30                      // in breath/minute
-#define DELTA_BPM (MAX_BPM-MIN_BPM)     // used to otpimize calculus
+#define DELTA_BPM (MAX_BPM-MIN_BPM)     // used to optimize calculus
 
 #define MIN_VT 200                      // in ml
 #define MAX_VT 800                      // in ml
@@ -80,23 +84,22 @@
 #define MIN_PEEP 1                      // in cmH2O
 #define MAX_PEEP 20                     // in cmH2O
 #define DELTA_PEEP (MAX_PEEP-MIN_PEEP)  // In cmH2O, used to optimize calculus
-#define PEEP_MARGIN 7.5                   // in cmH2O
+#define PEEP_MARGIN 3                 // in cmH2O, added pressure value to PEEP to start at initialization
+
 
 //---- Fixed parameters ----//
 
 // Mechanical
-//#define DISTANCE_PER_ROTATION 100                                       // In mm/rot
-//#define PULSE_PER_ROTATION 800                                          // In pulse/rot
-//#define DISTANCE_PER_PULSE DISTANCE_PER_ROTATION/PULSE_PER_ROTATION    // In mm/pulse
-#define DISTANCE_PER_PULSE 0.0125
+
+#define DISTANCE_PER_PULSE 0.0125                                       // In mm, linear motor displacement for each pulse 
 #define SQUEEZED_VOLUME    1000                                         // In ml, total volume when bag squeezed (not total bag volume)
-//#define TOTAL_RANGE        110                                          // In mm
-#define TOTAL_RANGE        50
+//#define TOTAL_RANGE        110                                          
+#define TOTAL_RANGE        50                                           // In mm
 #define VOLUME_PER_DISTANCE    SQUEEZED_VOLUME/TOTAL_RANGE              // In ml/mm (approximated total volume 1L/20cm approximated total range)
 #define VOLUME_PER_PULSE       VOLUME_PER_DISTANCE*DISTANCE_PER_PULSE   // In ml/pulse
 #define MOTOR_POSITION_LIMIT_INIT_MM       170                           // Max init range before error in mm 
-#define MOTOR_POSITION_LIMIT_INIT_PULSE   MOTOR_POSITION_LIMIT_INIT_MM/DISTANCE_PER_PULSE  // Max init range before error in pulse
-#define MOTOR_PULSE_WIDTH   4                                      // In us
+#define MOTOR_POSITION_LIMIT_INIT_PULSE   MOTOR_POSITION_LIMIT_INIT_MM/DISTANCE_PER_PULSE  // Max init range before error in pulses
+#define MOTOR_PULSE_WIDTH   4                                      // In us, note that due to the execution time, the real value will be a little bit higher (few us more ) 
 
 
 // Pressure sensor
@@ -111,7 +114,7 @@
 #define STATE_ERR_HIGH_PRESSURE 1       // Overpressure occured, need acknowledgement
 #define STATE_ERR_LOW_PRESSURE 2        // Low pressure occured, need acknowledgement
 #define STATE_ERR_FAIL_INIT 3           // Initialisation failure occured
-#define STATE_ERR_MOTOR 4
+#define STATE_ERR_MOTOR 4               // Motor failure detected 
 
 #define ON 1
 #define OFF 0
@@ -139,15 +142,9 @@
 #define PIN_BPM_IN A0
 #define PIN_VT_IN A1
 #define PIN_IE_IN A2
-//#define PIN_PEEP_IN A3
-
-// ARDUINO UNO
 #define PIN_PRESSURE_IN A3
+// A4 AND A5 RESERVED FOR I2C
 
-
-// ARDUINO NANO
-// !!! A4 AND A5 RESERVED FOR I2C
-//#define PIN_PRESSURE_IN A7
 
 //Digital inputs
 #define PIN_SWITCH_ONOFF 2
@@ -180,17 +177,14 @@ void LCDclear();
 
 #endif
 
-void SendPulse(int pin, int timeus);
+void SendPulse(int pin, int timeus);                         // Motor pulse function
 void ActiveCount1(float timetointerruptus, long Ninterrupt); // Enable Counter 2 with interruption after timetointerrupt second
 void StopCount1();
+
 int interrtime1;                        // global variable to reload the counter
-int interrtime2;                        // global variable to reload the counter
-bool inter1_flag = 0;
-bool inter2_flag = 0;
-long Ninter1 = 0;
-long Ninter2 = 0;
-int cnt1 = 0;           // interruption counter
-int cnt2 = 0;           // interruption counter
+long Ninter1 = 0;                       // Number of interrupt 
+int cnt1 = 0;                           // interruption counter
+
 
 
 
@@ -199,13 +193,13 @@ int cnt2 = 0;           // interruption counter
 float bpm = 0;    // In breath/minute
 float IE = 0;   // Inspiration/expiration ratio 1:x
 int VT = 0;     // In pulses   //MAY CHANGE
-int peep = 0;     // In cmH20
+int peep = 5;     // In cmH20
 bool start = 1; // ON/OFF switch
 
 
 //----------- Measured variables declaration -----------//
 int pressure = 15; // in cmH2O
-int plateau_pressure = 0;
+int plateau_pressure = 0; // in cmH2O
 
 
 //----------- Internal variables declaration -----------//
@@ -218,10 +212,7 @@ float Psin = 0; // time/pulse  //MAY CHANGE
 float Psex = 0; // time/pulse    //MAY CHANGE
 long Npulse = 0; // Total cycle pulses    //MAY CHANGE
 
-//float Tplateau = 0.15; // Pause time to measure plateau pressure
 float Tplateau = 150; // Pause time to measure plateau pressure in millisec
-
-float pulse_per_volume = 1 / VOLUME_PER_PULSE;
 
 int state = STOP; // Initial system state machine
 
@@ -265,16 +256,9 @@ long PEEP_relative_origine = 0;
 int motorposition = 0;
 
 
-
-
-
-
-
 //----------- Debug variable declaration -----------//
 long timestart = 0;
 long interuptcnt = 0;
-
-
 
 
 
@@ -313,8 +297,6 @@ GEVE_VeMon_Data geve_status =
   false,
   false
 };
-
-
 
 
 
@@ -400,32 +382,24 @@ void loop()
   // ================START OF Read potentiometers & display values ======================//
 
   bpm = analogRead(PIN_BPM_IN) * DELTA_BPM / 1024 + MIN_BPM;
-  // bpm = 8; // A ENLEVER --------------------------------------------------------------
+
   VT = analogRead(PIN_VT_IN) * DELTA_VT / 10 + MIN_VT;
-  //VT = 200; // A ENLEVER --------------------------------------------------------------
+
   IE = (float)(analogRead(PIN_IE_IN)) * DELTA_IE / 1024 + MIN_IE;
-  //IE = 1;  // A ENLEVER --------------------------------------------------------------
-  //peep = analogRead(PIN_PEEP_IN) * DELTA_PEEP / 1024 + MIN_PEEP;
-  peep = 0; // A ENLEVER --------------------------------------------------------------
 
   // read pressure
   pressure = ((analogRead(PIN_PRESSURE_IN) - 512) * PRESSURE_SENSOR_POS_DYNAMIC / 1024) * 5 / 2 ;
-  //pressure = ((analogRead(PIN_PRESSURE_IN) - 102) * 2*PRESSURE_SENSOR_POS_DYNAMIC /4 / 1024)+PRESSURE_SENSOR_POS_DYNAMIC ;
+
   // PCIF -----vvvvv----- comment out to test PC interface ----------
   //Serial.print("Pressure : ");
   //Serial.println(pressure);
   // PCIF -----^^^^^----- end commenting out ----------
-  //pressure = analogRead(PIN_PRESSURE_IN) * 40 / 1024; // A ENLEVER --------------------------------------------------------------
-  //pressure = 15; // A ENLEVER --------------------------------------------------------------
-
-
-
 
   geve_status.motor_position = motorposition; // <--- PCIF ---
 
 
   // ====================== START OF Update display =======================//
-  // ---------- Update BPM ---------- //
+
   if ((bpm < 10) && (bpm != lastbpm))
   {
 #ifdef LCD_2004A
@@ -464,7 +438,6 @@ void loop()
   LCDWrite((char) IE);
 #endif
 
-  // ---------- Update PEEP ---------- //
   if ((peep < 10) && (peep != lastpeep))
   {
 #ifdef LCD_2004A
@@ -489,7 +462,6 @@ void loop()
   LCDWrite(peep);
 #endif
 
-  // ---------- Update PRESSURE ---------- //
   if ((pressure < 10) && (pressure != lastpressure))
   {
 #ifdef LCD_2004A
@@ -541,14 +513,14 @@ void loop()
 
     if (pressure > MAX_PRESSURE)
     {
-      error_state = STATE_ERR_HIGH_PRESSURE;
+      error_state = STATE_ERR_HIGH_PRESSURE;            // IN CASE OF HIGH PRESSURE, THE SYSTEM STOPS AND GENERATES AN ALARM
       TIMSK2 = 0;
       cnt1 = 0;
       state = STOP;
     }
     if (pressure < peep)
     {
-      error_state = STATE_ERR_LOW_PRESSURE;             // WHAT MUST BE DONE IN CASE OF LOW PRESSURE ?  TRY TO SQUEEZE MORE AND CHANGE PEEP ORIGIN ? STOP SYSTEM AND REINIT ?
+      error_state = STATE_ERR_LOW_PRESSURE;             // IN CASE OF LOW PRESSURE, THE SYSTEM CONTINUE ITS CYCLE, BUT GENERATES AN ALARM
     }
   }
 
@@ -709,7 +681,7 @@ void loop()
   // END OF Read potentiometers & display values =====================================================
 
 
-  // START OF State Machine
+  // START OF System state Machine
 
   switch (state)
   {
@@ -966,9 +938,13 @@ void loop()
       geve_status.pressure_plateau = pressure; // <--- PCIF ---
 #ifdef LCD_2004A
       lcd.setCursor(18, 3);
+      lcd.print("  ");
+      lcd.setCursor(18, 3);
       lcd.print(plateau_pressure);
 #endif
 #ifdef LCD_NEWHAVEN
+      LCDsetCursor(18, 3);
+      LCDWrite("  ");
       LCDsetCursor(18, 3);
       LCDWrite(plateau_pressure);
 #endif
