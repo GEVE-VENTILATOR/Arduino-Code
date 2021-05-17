@@ -4,8 +4,8 @@
   GEVE - Ventilator monitoring system V1.0
 
   Date : 07.04.20
-  
-  Authors : 
+
+  Authors :
   Stoeckli H. - HEPIA
   Rossel R.   - ANGARA TECHNOLOGY
 
@@ -35,7 +35,7 @@
 
   Mode 1 : Volume control - selected breaths delivered at constant rate, pressure monitored only for
   safety. - Only suitable for sedated or paralyzed patients.
- 
+
   Mode 2  : ****    NOT IMPLEMENTED YET    ****     Assist control - When the patient tries to breathe in,
   the pressure sensor will see a pressure drop, and the machine will begin squeezing the bag in order
   to assist in the breath.
@@ -53,9 +53,6 @@
 // ================= CHANGE LCD MODEL HERE ====================0
 //#define LCD_NEWHAVEN 0       // NOT FULLY OPERATIONNAL !
 #define LCD_2004A 1
-
-
-
 
 #include <Wire.h>
 #ifdef LCD_2004A
@@ -75,7 +72,7 @@
 
 #define MIN_VT 200                      // in ml
 #define MAX_VT 800                      // in ml
-#define DELTA_VT (MAX_VT-MIN_VT)/100    // In ml, used to optimize calculus
+#define DELTA_VT (MAX_VT-MIN_VT)    // In ml, used to optimize calculus
 
 #define MIN_IE 1                        // in ratio E/I
 #define MAX_IE 3                        // in ratio E/I
@@ -93,7 +90,7 @@
 
 #define DISTANCE_PER_PULSE 0.0125                                       // In mm, linear motor displacement for each pulse 
 #define SQUEEZED_VOLUME    1000                                         // In ml, total volume when bag squeezed (not total bag volume)
-//#define TOTAL_RANGE        110                                          
+//#define TOTAL_RANGE        110
 #define TOTAL_RANGE        50                                           // In mm
 #define VOLUME_PER_DISTANCE    SQUEEZED_VOLUME/TOTAL_RANGE              // In ml/mm (approximated total volume 1L/20cm approximated total range)
 #define VOLUME_PER_PULSE       VOLUME_PER_DISTANCE*DISTANCE_PER_PULSE   // In ml/pulse
@@ -130,18 +127,19 @@
 #define INIT 2
 #define SET_INHALE 3
 #define INHALE 4
-#define SET_PAUSE 5
-#define PAUSE 6
+#define SET_PAUSE1 5
+#define PAUSE1 6
 #define SET_EXHALE 7
 #define EXHALE 8
-
+#define SET_PAUSE2 9
+#define PAUSE2 10
 
 //---- Pins definition ----//
 
 //Analog inputs
 #define PIN_BPM_IN A0
-#define PIN_VT_IN A1
-#define PIN_IE_IN A2
+#define PIN_IE_IN A1
+#define PIN_VT_IN A2
 #define PIN_PRESSURE_IN A3
 // A4 AND A5 RESERVED FOR I2C
 
@@ -182,10 +180,8 @@ void ActiveCount1(float timetointerruptus, long Ninterrupt); // Enable Counter 2
 void StopCount1();
 
 int interrtime1;                        // global variable to reload the counter
-long Ninter1 = 0;                       // Number of interrupt 
+long Ninter1 = 0;                       // Number of interrupt
 int cnt1 = 0;                           // interruption counter
-
-
 
 
 //----------- User Inputs variables declaration -----------//
@@ -200,7 +196,7 @@ bool start = 1; // ON/OFF switch
 //----------- Measured variables declaration -----------//
 int pressure = 15; // in cmH2O
 int plateau_pressure = 0; // in cmH2O
-
+int plateau_peep = 0; // in cmH2O
 
 //----------- Internal variables declaration -----------//
 float T = 0;    // INHALE/EXHALE period in seconds
@@ -212,7 +208,8 @@ float Psin = 0; // time/pulse  //MAY CHANGE
 float Psex = 0; // time/pulse    //MAY CHANGE
 long Npulse = 0; // Total cycle pulses    //MAY CHANGE
 
-float Tplateau = 150; // Pause time to measure plateau pressure in millisec
+float Tplateau = 300; // Pause time to measure plateau pressure in millisec
+float Tpeep = 50; // Pause time to measure plateau peep in millisec
 
 int state = STOP; // Initial system state machine
 
@@ -232,6 +229,7 @@ int cnt_alarm = 0;
 
 int cnt_positioning;
 
+bool stop_origin_busy = 0;
 
 //----------- LCD management variable -----------//
 int lastbpm = 0;
@@ -241,6 +239,12 @@ int lastpeep = 0;
 bool laststate = 1;
 int blink_error = 0;
 bool printerror = 0;
+
+int cntscreenchange = 0;
+bool screenshow = 0;
+bool oldscreenshow = 1;
+
+
 
 #ifdef LCD_2004A
 LiquidCrystal_I2C lcd(0x27, 20, 4); //Set the LCD address to 0x27 for a 20 chars and 4 lines display
@@ -255,6 +259,7 @@ const byte LCDa = 0x28; //LCD address on I2C bus
 long PEEP_relative_origine = 0;
 int motorposition = 0;
 
+int savedmotorposition = 0;
 
 //----------- Debug variable declaration -----------//
 long timestart = 0;
@@ -298,14 +303,6 @@ GEVE_VeMon_Data geve_status =
   false
 };
 
-
-
-
-
-
-
-
-
 void setup()
 {
   //----------- I/O init. -----------//
@@ -340,18 +337,6 @@ void setup()
   lcd.backlight();
   lcd.clear();
 
-  lcd.setCursor(0, 1);
-  lcd.print("BPM:");
-  lcd.setCursor(8, 1);
-  lcd.print("Tid.Vol.:");
-  lcd.setCursor(0, 2);
-  lcd.print("IE:");
-  lcd.setCursor(12, 2);
-  lcd.print("PEEP.:");
-  lcd.setCursor(0, 3);
-  lcd.print("Press:");
-  lcd.setCursor(10, 3);
-  lcd.print("PressPl:");
 #endif
 
 #ifdef LCD_NEWHAVEN
@@ -359,19 +344,6 @@ void setup()
   TWBR = 100000; //sets I2C speed to 100kHz very important
   LCDclear();
   //delay(500);     // for observation only can be removed
-
-  LCDsetCursor(0, 1);
-  LCDWrite("BPM:");
-  LCDsetCursor(8, 1);
-  LCDWrite("Tid.Vol.:");
-  LCDsetCursor(0, 2);
-  LCDWrite("IE:");
-  LCDsetCursor(12, 2);
-  LCDWrite("PEEP.:");
-  LCDsetCursor(0, 3);
-  LCDWrite("Press:");
-  LCDsetCursor(10, 3);
-  LCDWrite("PressPl:");
 
 #endif
 
@@ -381,116 +353,198 @@ void loop()
 {
   // ================START OF Read potentiometers & display values ======================//
 
-  bpm = analogRead(PIN_BPM_IN) * DELTA_BPM / 1024 + MIN_BPM;
+  bpm = (int)(MAX_BPM - ((float)analogRead(PIN_BPM_IN) * DELTA_BPM / 1024)) ;
 
-  VT = analogRead(PIN_VT_IN) * DELTA_VT / 10 + MIN_VT;
+  VT = (int)(MAX_VT - ((float)analogRead(PIN_VT_IN) * DELTA_VT / 1024)) ;
 
-  IE = (float)(analogRead(PIN_IE_IN)) * DELTA_IE / 1024 + MIN_IE;
+  IE = MAX_IE - ((float)(analogRead(PIN_IE_IN)) * DELTA_IE / 1024);
 
   // read pressure
-  pressure = ((analogRead(PIN_PRESSURE_IN) - 512) * PRESSURE_SENSOR_POS_DYNAMIC / 1024) * 5 / 2 ;
+  pressure = (int)(((float)(analogRead(PIN_PRESSURE_IN) - 512) * PRESSURE_SENSOR_POS_DYNAMIC / 1024) * 5 / 2) ;
 
   // PCIF -----vvvvv----- comment out to test PC interface ----------
   //Serial.print("Pressure : ");
   //Serial.println(pressure);
   // PCIF -----^^^^^----- end commenting out ----------
 
-  geve_status.motor_position = motorposition; // <--- PCIF ---
+  geve_status.breath_pm    = bpm; // <--- PCIF ---
+  geve_status.tidal_volume = VT; // <--- PCIF ---
+  geve_status.in_ex_ratio  = IE; // <--- PCIF ---
+
+
 
 
   // ====================== START OF Update display =======================//
 
-  if ((bpm < 10) && (bpm != lastbpm))
+
+  if (screenshow == 0)
   {
+    if (oldscreenshow == 1)
+    {
+#ifdef LCD_2004A
+      lcd.setCursor(0, 1);
+      lcd.print("BPM:    ");
+      lcd.setCursor(8, 1);
+      lcd.print("Tid.Vol.:   ");
+      lcd.setCursor(0, 2);
+      lcd.print("IE:         ");
+      lcd.setCursor(12, 2);
+      lcd.print("PEEP.:  ");
+      lcd.setCursor(0, 3);
+      lcd.print("Press:    ");
+      lcd.setCursor(10, 3);
+      lcd.print("PressPl:  ");
+#endif
+
+#ifdef LCD_NEWHAVEN
+      LCDsetCursor(0, 1);
+      LCDWrite("BPM:");
+      LCDsetCursor(8, 1);
+      LCDWrite("Tid.Vol.:");
+      LCDsetCursor(0, 2);
+      LCDWrite("IE:");
+      LCDsetCursor(12, 2);
+      LCDWrite("PEEP.:");
+      LCDsetCursor(0, 3);
+      LCDWrite("Press:");
+      LCDsetCursor(10, 3);
+      LCDWrite("PressPl:");
+#endif
+    }
+
+    if ((bpm < 10) && (bpm != lastbpm) && (oldscreenshow == 1))
+    {
+#ifdef LCD_2004A
+      lcd.setCursor(4, 1);
+      lcd.print("  ");
+#endif
+
+#ifdef LCD_NEWHAVEN
+      LCDsetCursor(4, 1);
+      LCDWrite("  ");
+#endif
+    }
+    lastbpm = bpm;
+
 #ifdef LCD_2004A
     lcd.setCursor(4, 1);
-    lcd.print("  ");
+    lcd.print((int)bpm);
+
+    lcd.setCursor(17, 1);
+    lcd.print(VT);
+
+    lcd.setCursor(4, 2);
+    lcd.print(IE);
 #endif
 
 #ifdef LCD_NEWHAVEN
     LCDsetCursor(4, 1);
-    LCDWrite("  ");
+    LCDWrite((int)bpm);
+
+    LCDsetCursor(17, 1);
+    LCDWrite(VT);
+
+    LCDsetCursor(4, 2);
+    LCDWrite((char) IE);
 #endif
-  }
-  lastbpm = bpm;
-  geve_status.breath_pm    = bpm; // <--- PCIF ---
-  geve_status.tidal_volume = VT; // <--- PCIF ---
-  geve_status.in_ex_ratio  = IE; // <--- PCIF ---
+
+    if ((peep < 10) && (peep != lastpeep))
+    {
 #ifdef LCD_2004A
-  lcd.setCursor(4, 1);
-  lcd.print((int)bpm);
+      lcd.setCursor(18, 2);
+      lcd.print("  ");
 
-  lcd.setCursor(17, 1);
-  lcd.print(VT);
-
-  lcd.setCursor(4, 2);
-  lcd.print(IE);
 #endif
-
 #ifdef LCD_NEWHAVEN
-  LCDsetCursor(4, 1);
-  LCDWrite((int)bpm);
 
-  LCDsetCursor(17, 1);
-  LCDWrite(VT);
 
-  LCDsetCursor(4, 2);
-  LCDWrite((char) IE);
+      LCDsetCursor(18, 2);
+      LCDWrite("  ");
+
 #endif
 
-  if ((peep < 10) && (peep != lastpeep))
-  {
+    }
+    lastpeep = peep;
+
 #ifdef LCD_2004A
     lcd.setCursor(18, 2);
-    lcd.print("  ");
+    lcd.print(plateau_peep);
 #endif
+
 #ifdef LCD_NEWHAVEN
     LCDsetCursor(18, 2);
-    LCDWrite("  ");
+    LCDWrite(plateau_peep);
 #endif
 
-  }
-  lastpeep = peep;
-  geve_status.peep = peep; // <--- PCIF ---
+    if ((pressure < 10) && (pressure != lastpressure))
+    {
 #ifdef LCD_2004A
-  lcd.setCursor(18, 2);
-  lcd.print(peep);
+      lcd.setCursor(6, 3);
+      lcd.print("  ");
 #endif
 
 #ifdef LCD_NEWHAVEN
-  LCDsetCursor(18, 2);
-  LCDWrite(peep);
+      LCDsetCursor(6, 3);
+      LCDWrite("  ");
 #endif
+    }
+    lastpressure = pressure;
 
-  if ((pressure < 10) && (pressure != lastpressure))
-  {
 #ifdef LCD_2004A
     lcd.setCursor(6, 3);
-    lcd.print("  ");
+    lcd.print(pressure);
+#endif
+#ifdef LCD_NEWHAVEN
+    LCDsetCursor(6, 3);
+    LCDWrite(pressure);
+#endif
+
+#ifdef LCD_2004A
+    lcd.setCursor(18, 3);
+    lcd.print(plateau_pressure);
+#endif
+#ifdef LCD_NEWHAVEN
+    LCDsetCursor(18, 3);
+    LCDWrite(plateau_pressure);
+#endif
+
+
+  }
+  else if (oldscreenshow == 0 && screenshow == 1)
+  {
+
+#ifdef LCD_2004A
+    lcd.setCursor(0, 1);
+    lcd.print("Before starting the ");
+    lcd.setCursor(0, 2);
+    lcd.print("system, make sure to");
+    lcd.setCursor(0, 3);
+    lcd.print("deflate the testlung");
+
 #endif
 
 #ifdef LCD_NEWHAVEN
-    LCDsetCursor(6, 3);
-    LCDWrite("  ");
+    LCDsetCursor(0, 1);
+    LCDWrite("                    ");
+    LCDsetCursor(0, 2);
+    LCDWrite("                    ");
+    LCDsetCursor(0, 3);
+    LCDWrite("                    ");
 #endif
+
   }
-  lastpressure = pressure;
+  oldscreenshow = screenshow ;
+
+  geve_status.motor_position = motorposition; // <--- PCIF ---
   geve_status.pressure = pressure; // <--- PCIF ---
-#ifdef LCD_2004A
-  lcd.setCursor(6, 3);
-  lcd.print(pressure);
-#endif
-#ifdef LCD_NEWHAVEN
-  LCDsetCursor(6, 3);
-  LCDWrite(pressure);
-#endif
+
 
   // ====================== END OF Update display =======================//
 
 
 
   // ---------- Check ON/OFF ---------- //
-  if (digitalRead(PIN_SWITCH_ONOFF) == OFF)
+  if (!digitalRead(PIN_SWITCH_ONOFF) == OFF) // Inversé car état bouton physique inversé
   {
     TIMSK2 = 0;
     cnt1 = 0;
@@ -685,18 +739,19 @@ void loop()
 
   switch (state)
   {
-
     case STOP :
+
       initialized = 0;
-      if (digitalRead(PIN_INP))
+      if (digitalRead(PIN_INP) || digitalRead(PIN_BUSY))
       {
         digitalWrite(PIN_MOTOR_ORIGIN, 0); // open system
-        delay(1000);
       }
       else
       {
         digitalWrite(PIN_MOTOR_ORIGIN, 1); // open system
+
       }
+
       if (laststate && !printerror)
       {
         first_stop = 1;
@@ -707,13 +762,13 @@ void loop()
         //lcd.setCursor(0, 0);
         //lcd.print("                    ");
         lcd.setCursor(0, 0);
-        lcd.print("STOP                ");
+        lcd.print("STOP               ");
 #endif;
 #ifdef LCD_NEWHAVEN
         LCDsetCursor(0, 0);
         LCDWrite("                    ");
         LCDsetCursor(0, 0);
-        LCDWrite("STOP                  ");
+        LCDWrite("STOP                ");
 #endif;
       }
       // PCIF -----vvvvv----- comment out to test PC interface ----------
@@ -723,17 +778,37 @@ void loop()
       laststate = 0;
 
 
-      if (digitalRead(PIN_SWITCH_ONOFF)) {
+      if (!digitalRead(PIN_SWITCH_ONOFF)) // Inversé car état bouton physique inversé
+      {
+        screenshow = 0;
+        cntscreenchange = 0;
+
         if (first_stop) ActiveCount1(6000, 3000);
         first_stop = 0;
         if (digitalRead(PIN_INP) == true) //waiting on system to be open
         {
-
           state = SET_INIT;
           laststate = 1;
         }
       }
+      else
+      {
+        delay(5);
+        if (cntscreenchange >= 100) // chaque 5 secondes - change d'affichage
+        {
+          cntscreenchange = 0;
+          screenshow = !screenshow;
+        }
+        else
+        {
+          cntscreenchange++;
+        }
+      }
+
+
+
       // PCIF ----- Should the ON/OFF variable be changed here instead of the 'Check ON/OFF' part?
+
       break;
     // ----- end case STOP -----
 
@@ -744,11 +819,11 @@ void loop()
       {
 #ifdef LCD_2004A
         lcd.setCursor(0, 0);
-        lcd.print("INITIALIZATION      ");
+        lcd.print("SET INITIALIZATION ");
 #endif;
 #ifdef LCD_NEWHAVEN
         LCDsetCursor(0, 0);
-        LCDWrite("INITIALIZATION      ");
+        LCDWrite("SET INITIALIZATION ");
 #endif;
       }
       if (digitalRead(PIN_INP) == true)
@@ -773,11 +848,11 @@ void loop()
       {
 #ifdef LCD_2004A
         lcd.setCursor(0, 0);
-        lcd.print("INITIALIZATION      ");
+        lcd.print("INITIALIZATION     ");
 #endif;
 #ifdef LCD_NEWHAVEN
         LCDsetCursor(0, 0);
-        LCDWrite("INITIALIZATION      ");
+        LCDWrite("INITIALIZATION    ");
 #endif;
       }
 
@@ -791,17 +866,18 @@ void loop()
         {
           for (int j = 0; j < 100; j++)
           {
-
             SendPulse(PIN_MOTOR_STEP_FORTH, MOTOR_PULSE_WIDTH);
             motorposition++;
             delayMicroseconds(500);
           }
         }
-
       }
+
       else if (pressure >= (peep + PEEP_MARGIN))
       {
+  
         PEEP_relative_origine = motorposition;
+
         initialized = 1;
         motorposition = 0;
         StopCount1();
@@ -859,11 +935,11 @@ void loop()
         {
 #ifdef LCD_2004A
           lcd.setCursor(0, 0);
-          lcd.print("INHALATION          ");
+          lcd.print("INHALATION         ");
 #endif
 #ifdef LCD_NEWHAVEN
           LCDsetCursor(0, 0);
-          LCDWrite("INHALATION          ");
+          LCDWrite("INHALATION         ");
 #endif
         }
 
@@ -896,11 +972,11 @@ void loop()
       {
 #ifdef LCD_2004A
         lcd.setCursor(0, 0);
-        lcd.print("INHALATION          ");
+        lcd.print("INHALATION         ");
 #endif
 #ifdef LCD_NEWHAVEN
         LCDsetCursor(0, 0);
-        LCDWrite("INHALATION          ");
+        LCDWrite("INHALATION        ");
 #endif
       }
 
@@ -908,7 +984,7 @@ void loop()
     // ----- end case INAHLE -----
 
 
-    case SET_PAUSE : //Set Plateau pressure measurement
+    case SET_PAUSE1 : //Set Plateau pressure measurement
 
       // PCIF -----vvvvv----- comment out to test PC interface ----------
       //Serial.print("Inhalation time : ");
@@ -924,15 +1000,15 @@ void loop()
 
       timestart = millis();
 
-      if (state == SET_PAUSE) state = PAUSE;
+      if (state == SET_PAUSE1) state = PAUSE1;
 
       break;
-    // ----- end case SET_PAUSE -----
+    // ----- end case SET_PAUSE1 -----
 
 
 
 
-    case PAUSE :
+    case PAUSE1 :
 
       plateau_pressure = pressure;
       geve_status.pressure_plateau = pressure; // <--- PCIF ---
@@ -950,7 +1026,7 @@ void loop()
 #endif
 
       break;
-    // ----- end case PAUSE -----
+    // ----- end case PAUSE1 -----
 
 
     case SET_EXHALE :
@@ -971,11 +1047,11 @@ void loop()
         {
 #ifdef LCD_2004A
           lcd.setCursor(0, 0);
-          lcd.print("EXPIRATION          ");
+          lcd.print("EXPIRATION         ");
 #endif
 #ifdef LCD_NEWHAVEN
           LCDsetCursor(0, 0);
-          LCDWrite("EXPIRATION          ");
+          LCDWrite("EXPIRATION         ");
 #endif
         }
         digitalWrite(PIN_LED, LOW);
@@ -990,6 +1066,7 @@ void loop()
           cnt_positioning = 0;
         }
       }
+
       break;
     // ----- end case SET_EXHALE -----
 
@@ -1000,18 +1077,57 @@ void loop()
       {
 #ifdef LCD_2004A
         lcd.setCursor(0, 0);
-        lcd.print("EXPIRATION          ");
+        lcd.print("EXPIRATION         ");
 #endif
 #ifdef LCD_NEWHAVEN
         LCDsetCursor(0, 0);
-        LCDWrite("EXPIRATION          ");
+        LCDWrite("EXPIRATION         ");
 #endif
       }
 
+      break;
+    // ----- end case EXHALE -----
+
+    case SET_PAUSE2 : //Set Plateau pressure measurement
+
+      // PCIF -----vvvvv----- comment out to test PC interface ----------
+      //Serial.print("Inhalation time : ");
+      //Serial.println(millis() - timestart);
+      //Serial.print("Motor position after inspiration: ");
+      //Serial.println(motorposition);
+      // PCIF -----^^^^^----- end commenting out ----------
+
+      interuptcnt = 0;
+
+      ActiveCount1((Tpeep) * 10, 100);
+
+      timestart = millis();
+
+      if (state == SET_PAUSE2) state = PAUSE2;
 
       break;
-      // ----- end case EXHALE -----
+    // ----- end case SET_PAUSE2 -----
 
+
+    case PAUSE2 :
+
+      plateau_peep = pressure;
+      geve_status.peep = pressure; // <--- PCIF ---
+#ifdef LCD_2004A
+      lcd.setCursor(18, 2);
+      lcd.print("  ");
+      lcd.setCursor(18, 2);
+      lcd.print(plateau_peep);
+#endif
+#ifdef LCD_NEWHAVEN
+      LCDsetCursor(18, 2);
+      LCDWrite("  ");
+      LCDsetCursor(18, 2);
+      LCDWrite(plateau_peep);
+#endif
+
+      break;
+      // ----- end case PAUSE2 -----
   }
   // END OF State Machine
 
@@ -1020,6 +1136,7 @@ void loop()
 
   //
   // PCIF------ Communicate status to PC interface ---------- //
+
   Serial.print(geve_status.on_off);
   Serial.print("_");
   Serial.print(geve_status.error_ack);
@@ -1047,12 +1164,7 @@ void loop()
   Serial.println();
   //
 
-
-
-
 }
-
-
 
 
 void ActiveCount1(float timetointerruptus, long Ninterrupt)
@@ -1071,13 +1183,14 @@ void ActiveCount1(float timetointerruptus, long Ninterrupt)
   sei(); // Active l'interruption globale
 }
 
-void StopCount1() {
+void StopCount1()
+{
   TIMSK1 = 0;
-
 }
 
 
-ISR(TIMER1_OVF_vect) {
+ISR(TIMER1_OVF_vect)
+{
   TCNT1  = interrtime1;
   if ((state == INHALE) || (state == SET_INHALE)) {
     SendPulse(PIN_MOTOR_STEP_FORTH, MOTOR_PULSE_WIDTH);
@@ -1110,25 +1223,29 @@ ISR(TIMER1_OVF_vect) {
         error_state = STATE_ERR_FAIL_INIT;
         break;
 
-      case INHALE: state = SET_PAUSE;
+      case INHALE: state = SET_PAUSE1;
 
         break;
 
-      case EXHALE: state = SET_INHALE;
+      case EXHALE: state = SET_PAUSE2;
 
         break;
 
-      case PAUSE: state = SET_EXHALE;
+      case PAUSE1: state = SET_EXHALE;
 
         break;
+
+      case PAUSE2: state = SET_INHALE;
+
+        break;
+
     }
 
   }
 
 }
 
-void SendPulse(int pin, int timeus)
-{
+void SendPulse(int pin, int timeus) {
 
   digitalWrite(pin, LOW);
   digitalWrite(pin, HIGH);
@@ -1141,7 +1258,8 @@ void SendPulse(int pin, int timeus)
 #ifdef LCD_NEWHAVEN
 
 // Clear the NHD Extended LCD Screen
-void LCDclear() {
+void LCDclear()
+{
   Wire.beginTransmission(LCDa);
   Wire.write (0xFE);
   Wire.write(0x51);
